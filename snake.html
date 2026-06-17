@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Snake Neon</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:'Courier New',monospace; overflow:hidden; touch-action:none; }
+  #score { color:#00d4ff; font-size:1rem; letter-spacing:0.3em; margin-bottom:1rem; text-shadow:0 0 10px #00d4ff; }
+  canvas { border:1px solid rgba(0,212,255,0.3); box-shadow:0 0 30px rgba(0,212,255,0.2); }
+  #msg { position:absolute; color:#fff; font-size:1rem; letter-spacing:0.2em; text-align:center; text-shadow:0 0 10px #00d4ff; pointer-events:none; }
+  .dpad { display:none; position:fixed; bottom:2rem; left:50%; transform:translateX(-50%); display:grid; grid-template-columns:repeat(3,50px); grid-template-rows:repeat(3,50px); gap:4px; }
+  .dpad-btn { background:rgba(0,212,255,0.1); border:1px solid rgba(0,212,255,0.3); border-radius:8px; color:#00d4ff; font-size:1.2rem; display:flex; align-items:center; justify-content:center; cursor:pointer; active:background:rgba(0,212,255,0.3); }
+  .dpad-btn:active { background:rgba(0,212,255,0.3); }
+</style>
+</head>
+<body>
+<div id="score">SCORE: 0</div>
+<canvas id="c"></canvas>
+<div id="msg">TAP TO START</div>
+
+<div class="dpad" id="dpad">
+  <div></div>
+  <div class="dpad-btn" id="up">↑</div>
+  <div></div>
+  <div class="dpad-btn" id="left">←</div>
+  <div></div>
+  <div class="dpad-btn" id="right">→</div>
+  <div></div>
+  <div class="dpad-btn" id="down">↓</div>
+  <div></div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const SZ = 16;
+let cols, rows, snake, dir, food, score, running = false, loop;
+
+function resize() {
+  const maxW = Math.min(window.innerWidth - 32, 400);
+  const maxH = Math.min(window.innerHeight - 160, 400);
+  cols = Math.floor(maxW / SZ);
+  rows = Math.floor(maxH / SZ);
+  canvas.width = cols * SZ;
+  canvas.height = rows * SZ;
+}
+
+function start() {
+  snake = [{x: Math.floor(cols/2), y: Math.floor(rows/2)}];
+  dir = {x:1, y:0};
+  score = 0;
+  spawnFood();
+  running = true;
+  document.getElementById('msg').style.display = 'none';
+  clearInterval(loop);
+  loop = setInterval(tick, 120);
+}
+
+function spawnFood() {
+  do {
+    food = {x: Math.floor(Math.random()*cols), y: Math.floor(Math.random()*rows)};
+  } while (snake.some(s=>s.x===food.x&&s.y===food.y));
+}
+
+function tick() {
+  const head = {x: snake[0].x+dir.x, y: snake[0].y+dir.y};
+  if (head.x<0||head.x>=cols||head.y<0||head.y>=rows||snake.some(s=>s.x===head.x&&s.y===head.y)) {
+    clearInterval(loop);
+    running = false;
+    document.getElementById('msg').textContent = `GAME OVER — ${score} pts\nTAP TO RESTART`;
+    document.getElementById('msg').style.display = 'block';
+    return;
+  }
+  snake.unshift(head);
+  if (head.x===food.x&&head.y===food.y) {
+    score++;
+    document.getElementById('score').textContent = `SCORE: ${score}`;
+    spawnFood();
+  } else {
+    snake.pop();
+  }
+  draw();
+}
+
+function draw() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  // Grid
+  ctx.strokeStyle = 'rgba(0,212,255,0.04)';
+  ctx.lineWidth = 0.5;
+  for(let i=0;i<cols;i++){ctx.beginPath();ctx.moveTo(i*SZ,0);ctx.lineTo(i*SZ,canvas.height);ctx.stroke();}
+  for(let j=0;j<rows;j++){ctx.beginPath();ctx.moveTo(0,j*SZ);ctx.lineTo(canvas.width,j*SZ);ctx.stroke();}
+  // Food
+  ctx.fillStyle='#ff2d78';
+  ctx.shadowColor='#ff2d78';
+  ctx.shadowBlur=10;
+  ctx.fillRect(food.x*SZ+2,food.y*SZ+2,SZ-4,SZ-4);
+  ctx.shadowBlur=0;
+  // Snake
+  snake.forEach((s,i)=>{
+    const ratio = 1 - i/snake.length;
+    ctx.fillStyle = `rgba(0,212,255,${0.3+ratio*0.7})`;
+    ctx.shadowColor = '#00d4ff';
+    ctx.shadowBlur = i===0?12:4;
+    ctx.fillRect(s.x*SZ+1,s.y*SZ+1,SZ-2,SZ-2);
+  });
+  ctx.shadowBlur=0;
+}
+
+document.addEventListener('keydown',e=>{
+  if(!running){start();return;}
+  const map={ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0}};
+  const d = map[e.key];
+  if(d&&!(d.x===-dir.x&&dir.x!==0)&&!(d.y===-dir.y&&dir.y!==0)) dir=d;
+});
+
+canvas.addEventListener('click',()=>{ if(!running) start(); });
+document.getElementById('up').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else if(dir.y===0)dir={x:0,y:-1};});
+document.getElementById('down').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else if(dir.y===0)dir={x:0,y:1};});
+document.getElementById('left').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else if(dir.x===0)dir={x:-1,y:0};});
+document.getElementById('right').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else if(dir.x===0)dir={x:1,y:0};});
+
+// Swipe
+let tx,ty;
+document.addEventListener('touchstart',e=>{tx=e.touches[0].clientX;ty=e.touches[0].clientY;});
+document.addEventListener('touchend',e=>{
+  if(!running){start();return;}
+  const dx=e.changedTouches[0].clientX-tx, dy=e.changedTouches[0].clientY-ty;
+  if(Math.abs(dx)>Math.abs(dy)&&Math.abs(dx)>20){
+    if(dx>0&&dir.x===0)dir={x:1,y:0};
+    else if(dx<0&&dir.x===0)dir={x:-1,y:0};
+  } else if(Math.abs(dy)>20){
+    if(dy>0&&dir.y===0)dir={x:0,y:1};
+    else if(dy<0&&dir.y===0)dir={x:0,y:-1};
+  }
+});
+
+resize();
+draw();
+</script>
+</body>
+</html>
