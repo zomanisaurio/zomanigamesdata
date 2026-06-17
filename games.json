@@ -1,0 +1,18 @@
+[
+  {
+    "name": "Snake Neon",
+    "icon": "🐍",
+    "file": "github.com/zomanisaurio/zomanigamesdata/snake.html",
+    "genre": "Arcade",
+    "description": "Classic snake game with neon visuals",
+    "price": 0
+  },
+  {
+    "name": "Snake Neon",
+    "icon": "🐍",
+    "file": "TON_GITHUB_URL/snake.html",
+    "genre": "Arcade",
+    "description": "Classic snake game with neon visuals",
+    "price": 0
+  }
+]
