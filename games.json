@@ -2,7 +2,7 @@
   {
     "name": "Snake Neon",
     "icon": "🐍",
-    "file": "https://raw.githubusercontent.com/zomanisaurio/zomanigamesdata/main/snake.html",
+    "file": "snake.html",
     "genre": "Arcade",
     "description": "Classic snake game with neon visuals",
     "price": 0
@@ -10,7 +10,7 @@
   {
     "name": "R-Ball",
     "icon": "🏀",
-    "file": "https://raw.githubusercontent.com/zomanisaurio/zomanigamesdata/main/R-Ball.html",
+    "file": "R-Ball.html",
     "genre": "Card Game",
     "description": "Get Ready to up your deck and play against teams with an infernal deck too !",
     "price": 0
