@@ -1084,155 +1084,173 @@ document.getElementById('avatar-input').addEventListener('change',e=>{
 });
 
 // ════════════════════════════════════════════
-// PARTY / VISIO (WebRTC + WebSocket signaling)
+// PARTY / VISIO (WebRTC + Ably signaling)
 // ════════════════════════════════════════════
-const WS_URL='ws://localhost:8001';
-let ws=null;
-let peerConnections={};
-let localStream=null;
-let partyCode=null;
-let isHost=false;
+const ABLY_KEY = 'XqVBZQ.aDjYQw:aefHYSSJad9gjEjNdA7V3JxeMxTfsVUc5hXglC87mCM';
+let ablyClient = null;
+let ablyChannel = null;
+let peerConnections = {};
+let localStream = null;
+let partyCode = null;
+let isHost = false;
 
 function generatePartyCode(){
   return Math.random().toString(36).substr(2,6).toUpperCase();
 }
 
-function connectWS(){
-  return new Promise((resolve,reject)=>{
-    try{
-      ws=new WebSocket(WS_URL);
-      ws.onopen=()=>resolve(ws);
-      ws.onerror=()=>reject(new Error('WS error'));
-      ws.onmessage=e=>handleWSMessage(JSON.parse(e.data));
-      ws.onclose=()=>{ws=null;};
-    }catch(err){reject(err);}
+async function connectAbly(code){
+  return new Promise((resolve, reject) => {
+    // Load Ably SDK dynamically
+    if(window.Ably){ initAbly(code, resolve, reject); return; }
+    const script = document.createElement('script');
+    script.src = 'https://cdn.ably.com/lib/ably.min-1.js';
+    script.onload = () => initAbly(code, resolve, reject);
+    script.onerror = () => reject(new Error('Ably SDK non chargé'));
+    document.head.appendChild(script);
   });
 }
 
-async function handleWSMessage(msg){
-  if(msg.type==='joined'){
-    isHost=msg.role==='host';
-    document.getElementById('party-peers-count').textContent=`${msg.peers} joueur(s) connecté(s)`;
+function initAbly(code, resolve, reject){
+  try {
+    ablyClient = new Ably.Realtime({ key: ABLY_KEY });
+    ablyClient.connection.on('connected', () => {
+      ablyChannel = ablyClient.channels.get(`zgos-party-${code}`);
+      ablyChannel.subscribe(msg => handleAblyMessage(msg.name, msg.data));
+      resolve();
+    });
+    ablyClient.connection.on('failed', () => reject(new Error('Connexion Ably échouée')));
+  } catch(e){ reject(e); }
+}
+
+function ablySend(type, data){
+  if(ablyChannel) ablyChannel.publish(type, { ...data, sender: partyCode });
+}
+
+async function handleAblyMessage(type, data){
+  // Ignore own messages
+  if(data.sender === partyCode && type !== 'peer_joined') return;
+
+  if(type === 'join'){
+    if(isHost){
+      // Notify new peer how many are connected
+      ablySend('peer_joined', { peers: 2 });
+      await startPeerConnection(true);
+    }
+    document.getElementById('party-peers-count').textContent = 'Joueur connecté !';
+  }
+  if(type === 'peer_joined'){
     if(!isHost){
-      // Guest: create peer connection and offer
+      document.getElementById('party-peers-count').textContent = 'Connecté au host !';
       await startPeerConnection(false);
     }
   }
-  if(msg.type==='peer_joined'){
-    document.getElementById('party-peers-count').textContent=`${msg.peers} joueur(s) connecté(s)`;
-    // Host: create peer connection and offer to new guest
-    if(isHost) await startPeerConnection(true);
-  }
-  if(msg.type==='offer'){
-    const pc=getPeerConnection('remote');
-    await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-    const answer=await pc.createAnswer();
+  if(type === 'offer' && !isHost){
+    const pc = getPeerConnection('remote');
+    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    wsSend({type:'answer',code:partyCode,sdp:answer});
+    ablySend('answer', { sdp: answer });
   }
-  if(msg.type==='answer'){
-    const pc=peerConnections['remote'];
-    if(pc)await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+  if(type === 'answer' && isHost){
+    const pc = peerConnections['remote'];
+    if(pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
   }
-  if(msg.type==='candidate'){
-    const pc=peerConnections['remote'];
-    if(pc&&msg.candidate)await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+  if(type === 'candidate'){
+    const pc = peerConnections['remote'];
+    if(pc && data.candidate) await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
   }
-}
-
-function wsSend(data){
-  if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(data));
 }
 
 function getPeerConnection(id){
   if(!peerConnections[id]){
-    const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-    if(localStream)localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
-    pc.onicecandidate=e=>{if(e.candidate)wsSend({type:'candidate',code:partyCode,candidate:e.candidate});};
-    pc.ontrack=e=>{addVisioFrame(id,e.streams[0]);};
-    peerConnections[id]=pc;
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    if(localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    pc.onicecandidate = e => { if(e.candidate) ablySend('candidate', { candidate: e.candidate }); };
+    pc.ontrack = e => { addVisioFrame(id, e.streams[0]); };
+    peerConnections[id] = pc;
   }
   return peerConnections[id];
 }
 
 async function startPeerConnection(asOfferer){
-  const pc=getPeerConnection('remote');
+  const pc = getPeerConnection('remote');
   if(asOfferer){
-    const offer=await pc.createOffer();
+    const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    wsSend({type:'offer',code:partyCode,sdp:offer});
+    ablySend('offer', { sdp: offer });
   }
 }
 
-function addVisioFrame(id,stream){
-  const container=document.getElementById('visio-container');
-  let frame=document.getElementById('visio-'+id);
+function addVisioFrame(id, stream){
+  const container = document.getElementById('visio-container');
+  let frame = document.getElementById('visio-' + id);
   if(!frame){
-    frame=document.createElement('div');
-    frame.className='visio-frame';
-    frame.id='visio-'+id;
-    const video=document.createElement('video');
-    video.autoplay=true;video.playsInline=true;video.muted=(id==='local');
-    const name=document.createElement('div');
-    name.className='visio-name';
-    name.textContent=id==='local'?(getProfile()?.name||'Moi'):'Ami';
-    frame.appendChild(video);frame.appendChild(name);
+    frame = document.createElement('div');
+    frame.className = 'visio-frame';
+    frame.id = 'visio-' + id;
+    const video = document.createElement('video');
+    video.autoplay = true; video.playsInline = true; video.muted = (id === 'local');
+    const nameEl = document.createElement('div');
+    nameEl.className = 'visio-name';
+    nameEl.textContent = id === 'local' ? (getProfile()?.name || 'Moi') : 'Ami';
+    frame.appendChild(video); frame.appendChild(nameEl);
     container.appendChild(frame);
   }
-  frame.querySelector('video').srcObject=stream;
+  frame.querySelector('video').srcObject = stream;
 }
 
 function stopVisio(){
-  if(localStream){localStream.getTracks().forEach(t=>t.stop());localStream=null;}
-  Object.values(peerConnections).forEach(pc=>pc.close());
-  peerConnections={};
-  document.getElementById('visio-container').innerHTML='';
-  if(ws){ws.close();ws=null;}
-  partyCode=null;
+  if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  Object.values(peerConnections).forEach(pc => pc.close());
+  peerConnections = {};
+  document.getElementById('visio-container').innerHTML = '';
+  if(ablyChannel){ ablyChannel.unsubscribe(); ablyChannel = null; }
+  if(ablyClient){ ablyClient.close(); ablyClient = null; }
+  partyCode = null; isHost = false;
 }
 
 async function togglePartyPanel(){
   playClick();
-  const panel=document.getElementById('party-panel');
-  const isShown=panel.classList.contains('show');
-  if(isShown){panel.classList.remove('show');return;}
+  const panel = document.getElementById('party-panel');
+  if(panel.classList.contains('show')){ panel.classList.remove('show'); return; }
 
-  // Generate host code and get camera
   if(!partyCode){
-    partyCode=generatePartyCode();
-    document.getElementById('my-party-code').textContent=partyCode;
-    // Get local camera
+    partyCode = generatePartyCode();
+    isHost = true;
+    document.getElementById('my-party-code').textContent = partyCode;
     try{
-      localStream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});
-      addVisioFrame('local',localStream);
-    }catch(e){showToast('Caméra non disponible');}
-    // Connect to signaling server
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      addVisioFrame('local', localStream);
+    } catch(e){ showToast('Caméra non disponible'); }
     try{
-      await connectWS();
-      wsSend({type:'join',code:partyCode});
-    }catch(e){showToast('Serveur de signalisation non disponible');}
+      await connectAbly(partyCode);
+      // Host announces presence
+      ablySend('host_ready', {});
+      showToast(`Party créée : ${partyCode}`);
+    } catch(e){ showToast('Connexion Ably échouée'); }
   }
   panel.classList.add('show');
 }
 
 async function joinParty(){
-  const code=document.getElementById('party-join-input').value.trim().toUpperCase();
-  if(code.length<4){showToast('Code invalide');return;}
-  partyCode=code;
-  document.getElementById('my-party-code').textContent=code;
+  const code = document.getElementById('party-join-input').value.trim().toUpperCase();
+  if(code.length < 4){ showToast('Code invalide'); return; }
+  partyCode = code;
+  isHost = false;
+  document.getElementById('my-party-code').textContent = code;
 
   try{
-    localStream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});
-    addVisioFrame('local',localStream);
-  }catch(e){showToast('Caméra non disponible');}
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    addVisioFrame('local', localStream);
+  } catch(e){ showToast('Caméra non disponible'); }
 
   try{
-    await connectWS();
-    wsSend({type:'join',code:partyCode});
+    await connectAbly(partyCode);
+    ablySend('join', {});
     document.getElementById('party-panel').classList.remove('show');
     document.getElementById('party-fab').classList.add('active');
     showToast(`✓ Party rejointe : ${code}`);
-  }catch(e){showToast('Impossible de rejoindre - serveur injoignable');}
+  } catch(e){ showToast('Connexion impossible'); }
 }
 
 // ════════════════════════════════════════════
