@@ -246,6 +246,29 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 
 #avatar-input{display:none;}
+
+  /* ── PAYSAGE MOBILE ── */
+  @media screen and (max-height:500px) and (orientation:landscape){
+    .topbar{padding:0.4rem 1rem;}
+    .featured-banner{margin:0.4rem 1rem 0;padding:0.6rem 1rem;}
+    .featured-title{font-size:0.85rem;}
+    .section-label{padding:0.5rem 1rem 0.3rem;}
+    .game-strip{padding:0.2rem 1rem 0.5rem;gap:0.6rem;}
+    .game-card{width:clamp(80px,14vw,110px);}
+    .sidenav{padding:0.4rem 0.8rem;gap:0.3rem;}
+    .nav-btn{padding:0.4rem 0.7rem;font-size:0.7rem;}
+    .settings-body,.profile-body{padding:0.5rem 1rem;gap:0.6rem;}
+    .profile-avatar-large{width:60px;height:60px;font-size:1.6rem;}
+    .boot-logo{font-size:clamp(2rem,10vw,4rem);}
+    .party-box{padding:1rem;gap:0.6rem;}
+  }
+
+  /* VISIO overlay — paysage : colonne droite */
+  .visio-container{position:fixed;bottom:4rem;right:0.8rem;z-index:997;display:flex;flex-direction:column;gap:0.3rem;pointer-events:none;}
+  @media screen and (orientation:landscape){
+    .visio-container{bottom:0.8rem;flex-direction:column;max-height:88vh;overflow-y:auto;}
+    .visio-frame{width:90px;height:68px;}
+  }
 </style>
 </head>
 <body>
@@ -404,6 +427,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
     <div class="screen-title">SETTINGS</div>
   </div>
   <div class="settings-body">
+    <div class="settings-section">
+      <div class="settings-section-title">// AFFICHAGE</div>
+      <div class="settings-row">
+        <div><div class="settings-row-name">⛶ Plein écran</div><div class="settings-row-sub">Mode immersif</div></div>
+        <div class="toggle" id="toggle-fullscreen" onclick="toggleFullscreen()"><div class="toggle-dot"></div></div>
+      </div>
+    </div>
     <div class="settings-section">
       <div class="settings-section-title">// AUDIO</div>
       <div class="settings-row">
@@ -1045,11 +1075,6 @@ function removeFriend(idx){
   renderProfileScreen();
 }
 
-function joinFriendParty(code){
-  document.getElementById('party-join-input').value = code;
-  navigate('home');
-  setTimeout(()=>{ document.getElementById('party-fab').click(); },400);
-}
 
 async function uninstallGame(name){
   if(!confirm(`Désinstaller ${name} ?`)) return;
@@ -1097,54 +1122,78 @@ document.getElementById('avatar-input').addEventListener('change',e=>{
 });
 
 // ════════════════════════════════════════════
+// FULLSCREEN
+// ════════════════════════════════════════════
+function toggleFullscreen(){
+  if(!document.fullscreenElement && !document.webkitFullscreenElement){
+    const el = document.documentElement;
+    const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+    if(fn) fn.call(el).catch(()=>{});
+  } else {
+    const fn = document.exitFullscreen || document.webkitExitFullscreen;
+    if(fn) fn.call(document).catch(()=>{});
+  }
+}
+document.addEventListener('fullscreenchange', updateFullscreenToggle);
+document.addEventListener('webkitfullscreenchange', updateFullscreenToggle);
+function updateFullscreenToggle(){
+  const isFS = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const t = document.getElementById('toggle-fullscreen');
+  if(t) t.classList.toggle('on', isFS);
+}
+
+// ════════════════════════════════════════════
 // ABLY — AMIS + PARTY + CHAT + VISIO
 // ════════════════════════════════════════════
 const ABLY_KEY = 'XqVBZQ.aDjYQw:aefHYSSJad9gjEjNdA7V3JxeMxTfsVUc5hXglC87mCM';
 let ablyClient = null;
-let ablyPresence = null;   // channel global "zgos-presence" pour les demandes d'amis
-let ablyParty = null;      // channel de la party en cours
+let myChannel = null;   // canal personnel pour recevoir demandes d'amis
+let ablyParty = null;   // canal de la party
 let peerConnections = {};
 let localStream = null;
 let partyCode = null;
-let isHost = false;
-let pendingFriendRequest = null; // { name, code, avatar }
+let mySessionId = null; // ID unique par session (différent du friendCode)
+let pendingFriendRequest = null;
 
-// ── Chargement Ably SDK ──
+// ── SDK Ably ──
 function loadAblySDK(){
   return new Promise((resolve, reject) => {
     if(window.Ably){ resolve(); return; }
     const s = document.createElement('script');
     s.src = 'https://cdn.ably.com/lib/ably.min-1.js';
-    s.onload = resolve; s.onerror = () => reject(new Error('Ably SDK non chargé'));
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Ably SDK non chargé'));
     document.head.appendChild(s);
   });
 }
 
-async function ensureAblyClient(){
-  if(ablyClient) return;
+async function ensureAbly(){
+  if(ablyClient && ablyClient.connection.state === 'connected') return;
   await loadAblySDK();
   ablyClient = new Ably.Realtime({ key: ABLY_KEY });
   await new Promise((res, rej) => {
     ablyClient.connection.on('connected', res);
-    ablyClient.connection.on('failed', () => rej(new Error('Connexion Ably échouée')));
+    ablyClient.connection.on('failed', () => rej(new Error('Ably connexion échouée')));
+    setTimeout(() => rej(new Error('Timeout')), 8000);
   });
 }
 
-// ── Canal global de présence (demandes d'amis) ──
-async function connectPresence(){
-  await ensureAblyClient();
+// ── Canal personnel (demandes d'amis) ──
+async function connectMyChannel(){
   const p = getProfile(); if(!p) return;
-  const channel = ablyClient.channels.get(`zgos-user-${p.friendCode}`);
-  ablyPresence = channel;
-  channel.subscribe('friend_request', msg => {
-    handleFriendRequest(msg.data);
+  await ensureAbly();
+  // Canal basé sur friendCode — permanent et unique
+  myChannel = ablyClient.channels.get('zgos-friend-' + p.friendCode);
+
+  myChannel.subscribe('friend_request', msg => {
+    showFriendRequestNotif(msg.data);
   });
-  channel.subscribe('friend_accepted', msg => {
-    handleFriendAccepted(msg.data);
+  myChannel.subscribe('friend_accepted', msg => {
+    onFriendAccepted(msg.data);
   });
-  channel.subscribe('party_invite', msg => {
-    showToast(`🎮 ${msg.data.name} a une party : ${msg.data.partyCode}`);
-    updateFriendPartyCode(msg.data.senderCode, msg.data.partyCode);
+  myChannel.subscribe('party_invite', msg => {
+    showToast(`🎮 ${msg.data.fromName} : party ${msg.data.code}`);
+    updateFriendPartyCode(msg.data.fromCode, msg.data.code);
   });
 }
 
@@ -1154,37 +1203,30 @@ async function addFriend(){
   const code = input.value.trim().toLowerCase();
   if(!code){ showToast('Entre un code ami'); return; }
   const p = getProfile(); if(!p) return;
-  if(!p.friends) p.friends = [];
-  if(p.friends.some(f=>f.code===code)){ showToast('Ami déjà ajouté'); return; }
   if(code === p.friendCode){ showToast("C'est ton propre code !"); return; }
+  if((p.friends||[]).some(f => f.code === code)){ showToast('Déjà ami !'); return; }
 
   try {
-    await ensureAblyClient();
-    const targetChannel = ablyClient.channels.get(`zgos-user-${code}`);
-    await targetChannel.publish('friend_request', {
-      name: p.name || 'Joueur',
-      code: p.friendCode,
-      avatar: p.avatar || null
+    await ensureAbly();
+    const target = ablyClient.channels.get('zgos-friend-' + code);
+    await target.publish('friend_request', {
+      fromCode: p.friendCode,
+      fromName: p.name || 'Joueur',
+      fromAvatar: p.avatar || null
     });
     input.value = '';
-    showToast(`📨 Demande envoyée !`);
-    playClick();
-  } catch(e){
-    showToast('Erreur envoi demande');
-  }
+    playClick(); showToast('📨 Demande envoyée !');
+  } catch(e){ showToast('Erreur : ' + e.message); }
 }
 
-function handleFriendRequest(data){
-  // Affiche la notification
+function showFriendRequestNotif(data){
   pendingFriendRequest = data;
-  document.getElementById('fr-name').textContent = data.name || 'Joueur';
-  document.getElementById('fr-code').textContent = data.code;
-  const avatarEl = document.getElementById('fr-avatar');
-  if(data.avatar){
-    avatarEl.innerHTML = `<img src="${data.avatar}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`;
-  } else {
-    avatarEl.textContent = '👤';
-  }
+  document.getElementById('fr-name').textContent = data.fromName || 'Joueur';
+  document.getElementById('fr-code').textContent = data.fromCode;
+  const av = document.getElementById('fr-avatar');
+  av.innerHTML = data.fromAvatar
+    ? `<img src="${data.fromAvatar}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`
+    : '👤';
   document.getElementById('friend-request-notif').style.display = 'block';
   playInstall(); vibrate([20,40,20]);
 }
@@ -1193,28 +1235,23 @@ async function acceptFriendRequest(){
   if(!pendingFriendRequest) return;
   const req = pendingFriendRequest;
   document.getElementById('friend-request-notif').style.display = 'none';
-
-  // Ajoute l'ami localement
   const p = getProfile(); if(!p) return;
   if(!p.friends) p.friends = [];
-  if(!p.friends.some(f=>f.code===req.code)){
-    p.friends.push({ code: req.code, name: req.name, avatar: req.avatar || null, partyCode: null });
+  if(!p.friends.some(f => f.code === req.fromCode)){
+    p.friends.push({ code: req.fromCode, name: req.fromName, avatar: req.fromAvatar||null, partyCode: null });
     saveProfile_data(p);
   }
-
-  // Notifie l'autre qu'on a accepté
   try {
-    await ensureAblyClient();
-    const targetChannel = ablyClient.channels.get(`zgos-user-${req.code}`);
-    await targetChannel.publish('friend_accepted', {
-      name: p.name || 'Joueur',
-      code: p.friendCode,
-      avatar: p.avatar || null
+    await ensureAbly();
+    const target = ablyClient.channels.get('zgos-friend-' + req.fromCode);
+    await target.publish('friend_accepted', {
+      fromCode: p.friendCode,
+      fromName: p.name || 'Joueur',
+      fromAvatar: p.avatar || null
     });
   } catch(e){}
-
-  showToast(`✓ ${req.name} ajouté !`);
   playInstall(); vibrate([20,30,50]);
+  showToast(`✓ ${req.fromName} ajouté !`);
   if(currentScreen === 'profile') renderProfileScreen();
   pendingFriendRequest = null;
 }
@@ -1225,186 +1262,194 @@ function declineFriendRequest(){
   showToast('Demande refusée');
 }
 
-function handleFriendAccepted(data){
-  // L'autre a accepté notre demande → on l'ajoute aussi
+function onFriendAccepted(data){
   const p = getProfile(); if(!p) return;
   if(!p.friends) p.friends = [];
-  if(!p.friends.some(f=>f.code===data.code)){
-    p.friends.push({ code: data.code, name: data.name, avatar: data.avatar || null, partyCode: null });
+  if(!p.friends.some(f => f.code === data.fromCode)){
+    p.friends.push({ code: data.fromCode, name: data.fromName, avatar: data.fromAvatar||null, partyCode: null });
     saveProfile_data(p);
   }
-  showToast(`✓ ${data.name} a accepté !`);
-  playInstall(); vibrate([20,30,50]);
+  showToast(`✓ ${data.fromName} a accepté !`);
+  playInstall();
   if(currentScreen === 'profile') renderProfileScreen();
 }
 
 function updateFriendPartyCode(friendCode, pCode){
   const p = getProfile(); if(!p) return;
-  const f = (p.friends||[]).find(x=>x.code===friendCode);
+  const f = (p.friends||[]).find(x => x.code === friendCode);
   if(f){ f.partyCode = pCode; saveProfile_data(p); }
   if(currentScreen === 'profile') renderProfileScreen();
 }
 
-// ── PARTY ──
-function generatePartyCode(){
-  return Math.random().toString(36).substr(2,6).toUpperCase();
-}
+// ════════════════════════════════════════════
+// PARTY + WEBRTC
+// ════════════════════════════════════════════
+function genPartyCode(){ return Math.random().toString(36).substr(2,6).toUpperCase(); }
+function genSessionId(){ return Math.random().toString(36).substr(2,12); }
 
 async function connectPartyChannel(code){
-  await ensureAblyClient();
-  ablyParty = ablyClient.channels.get(`zgos-party-${code}`);
-  ablyParty.subscribe(msg => handlePartyMessage(msg.name, msg.data));
+  await ensureAbly();
+  if(ablyParty){ ablyParty.unsubscribe(); }
+  ablyParty = ablyClient.channels.get('zgos-party-' + code);
+  ablyParty.subscribe(msg => {
+    if(msg.data.sessionId !== mySessionId){
+      handlePartyMsg(msg.name, msg.data);
+    }
+  });
 }
 
-function partyPublish(type, data){
-  if(ablyParty) ablyParty.publish(type, { ...data, sender: partyCode });
+function partyPub(type, data){
+  if(ablyParty) ablyParty.publish(type, { ...data, sessionId: mySessionId });
 }
 
-async function handlePartyMessage(type, data){
+async function handlePartyMsg(type, data){
   const p = getProfile();
-  if(data.sender === partyCode) return; // ignore own
 
   if(type === 'join'){
+    // Un nouveau joueur arrive — le host lui envoie une offre WebRTC
+    appendChat('SYSTÈME', `${data.name||'Joueur'} a rejoint`);
     document.getElementById('party-peers-count').textContent = 'Joueur connecté !';
     showChatBox();
-    appendChatMessage('SYSTÈME', `${data.name||'Joueur'} a rejoint la party`);
-    if(isHost) await startPeerConnection('offerer_'+data.sender, true);
+    // Créer une connexion vers ce peer
+    const pc = createPeer(data.sessionId, true);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    partyPub('offer', { sdp: offer, to: data.sessionId, from: mySessionId });
   }
-  if(type === 'chat'){
-    appendChatMessage(data.name||'Ami', data.text);
-    vibrate([10]);
-  }
-  if(type === 'offer'){
-    const pc = getPeerConnection(data.sender);
+
+  if(type === 'offer' && data.to === mySessionId){
+    const pc = createPeer(data.from, false);
     await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    partyPublish('answer', { sdp: answer, target: data.sender });
+    partyPub('answer', { sdp: answer, to: data.from, from: mySessionId });
+    showChatBox();
   }
-  if(type === 'answer' && data.target === partyCode){
-    const pc = peerConnections[data.sender];
+
+  if(type === 'answer' && data.to === mySessionId){
+    const pc = peerConnections[data.from];
     if(pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
   }
-  if(type === 'candidate' && (!data.target || data.target === partyCode)){
-    const pc = peerConnections[data.sender] || getPeerConnection(data.sender);
-    if(pc && data.candidate) await pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(()=>{});
+
+  if(type === 'candidate' && data.to === mySessionId){
+    const pc = peerConnections[data.from];
+    if(pc && data.candidate){
+      await pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(()=>{});
+    }
+  }
+
+  if(type === 'chat'){
+    appendChat(data.name || 'Ami', data.text);
+    vibrate([10]);
   }
 }
 
-function getPeerConnection(peerId){
-  if(!peerConnections[peerId]){
-    const pc = new RTCPeerConnection({ iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}] });
-    if(localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    pc.onicecandidate = e => { if(e.candidate) partyPublish('candidate', { candidate: e.candidate, target: peerId }); };
-    pc.ontrack = e => { addVideoFrame(peerId, e.streams[0], 'Ami'); };
-    peerConnections[peerId] = pc;
-  }
-  return peerConnections[peerId];
-}
-
-async function startPeerConnection(peerId, asOfferer){
-  const pc = getPeerConnection(peerId);
-  if(asOfferer){
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    partyPublish('offer', { sdp: offer, target: peerId });
-  }
+function createPeer(peerId, asOfferer){
+  if(peerConnections[peerId]) return peerConnections[peerId];
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  });
+  if(localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  pc.onicecandidate = e => {
+    if(e.candidate) partyPub('candidate', { candidate: e.candidate, to: peerId, from: mySessionId });
+  };
+  pc.ontrack = e => {
+    const p = getProfile();
+    addVideoFrame(peerId, e.streams[0], 'Ami');
+  };
+  peerConnections[peerId] = pc;
+  return pc;
 }
 
 // ── VIDÉO ──
 function addVideoFrame(id, stream, label){
-  // Dans le panel party
+  // Dans le panel
   const container = document.getElementById('party-videos');
-  let frame = document.getElementById('pv-'+id);
-  if(!frame){
-    frame = document.createElement('div');
-    frame.id = 'pv-'+id;
-    frame.style.cssText = 'position:relative;width:120px;height:90px;border-radius:8px;overflow:hidden;background:#000;border:1px solid rgba(255,255,255,0.2);';
-    const video = document.createElement('video');
-    video.autoplay = true; video.playsInline = true; video.muted = (id === 'local');
-    video.style.cssText = 'width:100%;height:100%;object-fit:cover;';
-    const nameEl = document.createElement('div');
-    nameEl.style.cssText = 'position:absolute;bottom:3px;left:5px;font-size:0.5rem;font-family:var(--font-m);color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.8);';
-    nameEl.textContent = label;
-    frame.appendChild(video); frame.appendChild(nameEl);
-    container.appendChild(frame);
-
-    // Aussi dans le visio-container flottant (en jeu)
-    const visioContainer = document.getElementById('visio-container');
-    let vFrame = document.getElementById('visio-'+id);
-    if(!vFrame){
-      vFrame = document.createElement('div');
-      vFrame.className = 'visio-frame'; vFrame.id = 'visio-'+id;
-      const v2 = document.createElement('video');
-      v2.autoplay = true; v2.playsInline = true; v2.muted = (id==='local');
-      const n2 = document.createElement('div'); n2.className = 'visio-name'; n2.textContent = label;
-      vFrame.appendChild(v2); vFrame.appendChild(n2);
-      visioContainer.appendChild(vFrame);
-      vFrame.querySelector('video').srcObject = stream;
-    }
+  if(!document.getElementById('pv-'+id)){
+    const wrap = document.createElement('div');
+    wrap.id = 'pv-'+id;
+    wrap.style.cssText = 'position:relative;width:110px;height:82px;border-radius:8px;overflow:hidden;background:#000;border:1px solid rgba(255,255,255,0.15);flex-shrink:0;';
+    const v = document.createElement('video');
+    v.autoplay = true; v.playsInline = true; v.muted = (id === 'local');
+    v.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+    v.srcObject = stream;
+    const n = document.createElement('div');
+    n.style.cssText = 'position:absolute;bottom:3px;left:5px;font-size:0.5rem;font-family:var(--font-m);color:#fff;text-shadow:0 1px 3px #000;';
+    n.textContent = label;
+    wrap.appendChild(v); wrap.appendChild(n);
+    container.appendChild(wrap);
+  } else {
+    document.getElementById('pv-'+id).querySelector('video').srcObject = stream;
   }
-  frame.querySelector('video').srcObject = stream;
+
+  // Overlay flottant en jeu
+  const vc = document.getElementById('visio-container');
+  if(!document.getElementById('visio-'+id)){
+    const frame = document.createElement('div');
+    frame.className = 'visio-frame'; frame.id = 'visio-'+id;
+    const v2 = document.createElement('video');
+    v2.autoplay = true; v2.playsInline = true; v2.muted = (id==='local');
+    v2.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+    v2.srcObject = stream;
+    const n2 = document.createElement('div');
+    n2.className = 'visio-name'; n2.textContent = label;
+    frame.appendChild(v2); frame.appendChild(n2);
+    vc.appendChild(frame);
+  }
 }
 
 // ── CHAT ──
-function showChatBox(){
-  document.getElementById('party-chat-box').style.display = 'flex';
-}
-
-function appendChatMessage(author, text){
+function showChatBox(){ document.getElementById('party-chat-box').style.display = 'flex'; }
+function appendChat(author, text){
   const box = document.getElementById('party-chat-messages');
   const line = document.createElement('div');
-  line.style.cssText = 'font-family:var(--font-m);font-size:0.65rem;line-height:1.4;';
+  line.style.cssText = 'font-family:var(--font-m);font-size:0.65rem;line-height:1.4;word-break:break-word;';
   line.innerHTML = `<span style="color:var(--accent);font-weight:700;">${author}:</span> <span style="color:var(--text);">${text}</span>`;
   box.appendChild(line);
   box.scrollTop = box.scrollHeight;
 }
-
 function sendChatMessage(){
   const input = document.getElementById('party-chat-input');
-  const text = input.value.trim();
-  if(!text) return;
+  const text = input.value.trim(); if(!text) return;
   const p = getProfile();
-  const name = p?.name || 'Moi';
-  appendChatMessage(name, text);
-  partyPublish('chat', { text, name });
-  input.value = '';
-  playClick();
+  appendChat(p?.name || 'Moi', text);
+  partyPub('chat', { text, name: p?.name || 'Joueur' });
+  input.value = ''; playClick();
 }
 
-// ── TOGGLE PARTY PANEL ──
+// ── TOGGLE PARTY ──
 async function togglePartyPanel(){
   playClick();
   const panel = document.getElementById('party-panel');
   if(panel.classList.contains('show')){ panel.classList.remove('show'); return; }
 
   if(!partyCode){
-    partyCode = generatePartyCode();
-    isHost = true;
+    mySessionId = genSessionId();
+    partyCode = genPartyCode();
     document.getElementById('my-party-code').textContent = partyCode;
 
-    // Caméra locale
-    try{
+    try {
       localStream = await navigator.mediaDevices.getUserMedia({ video:true, audio:true });
       const p = getProfile();
       addVideoFrame('local', localStream, p?.name || 'Moi');
     } catch(e){ showToast('Caméra non disponible'); }
 
-    // Connexion Ably
-    try{
+    try {
       await connectPartyChannel(partyCode);
-      showToast(`Party créée : ${partyCode}`);
       showChatBox();
-
-      // Notifie les amis du code de party
+      // Notifie les amis
       const p = getProfile();
       (p?.friends||[]).forEach(async f => {
         try {
-          const fc = ablyClient.channels.get(`zgos-user-${f.code}`);
-          await fc.publish('party_invite', { name: p.name, senderCode: p.friendCode, partyCode });
+          const fc = ablyClient.channels.get('zgos-friend-' + f.code);
+          await fc.publish('party_invite', { fromName: p.name, fromCode: p.friendCode, code: partyCode });
         } catch(e){}
       });
-    } catch(e){ showToast('Connexion Ably échouée'); }
+      showToast(`Party créée : ${partyCode}`);
+    } catch(e){ showToast('Ably : ' + e.message); }
   }
   panel.classList.add('show');
 }
@@ -1412,25 +1457,32 @@ async function togglePartyPanel(){
 async function joinParty(){
   const code = document.getElementById('party-join-input').value.trim().toUpperCase();
   if(code.length < 4){ showToast('Code invalide'); return; }
-  partyCode = code; isHost = false;
+  mySessionId = genSessionId();
+  partyCode = code;
   document.getElementById('my-party-code').textContent = code;
 
-  try{
+  try {
     localStream = await navigator.mediaDevices.getUserMedia({ video:true, audio:true });
     const p = getProfile();
     addVideoFrame('local', localStream, p?.name || 'Moi');
   } catch(e){ showToast('Caméra non disponible'); }
 
-  try{
+  try {
     await connectPartyChannel(partyCode);
     const p = getProfile();
-    partyPublish('join', { name: p?.name || 'Joueur' });
-    await startPeerConnection('host', false);
+    // Annonce l'arrivée — le host répondra avec une offer WebRTC
+    partyPub('join', { name: p?.name || 'Joueur' });
     document.getElementById('party-panel').classList.remove('show');
     document.getElementById('party-fab').classList.add('active');
     showChatBox();
     showToast(`✓ Party rejointe : ${code}`);
-  } catch(e){ showToast('Connexion impossible'); }
+  } catch(e){ showToast('Connexion impossible : ' + e.message); }
+}
+
+function joinFriendParty(code){
+  document.getElementById('party-join-input').value = code;
+  navigate('home');
+  setTimeout(()=>{ togglePartyPanel(); },400);
 }
 
 function stopVisio(){
@@ -1442,7 +1494,8 @@ function stopVisio(){
   document.getElementById('party-chat-messages').innerHTML='';
   document.getElementById('party-chat-box').style.display='none';
   if(ablyParty){ ablyParty.unsubscribe(); ablyParty=null; }
-  partyCode=null; isHost=false;
+  document.getElementById('party-peers-count').textContent='En attente...';
+  partyCode=null; mySessionId=null;
 }
 
 // ════════════════════════════════════════════
@@ -1515,7 +1568,7 @@ async function init(){
         if(p)updateHomeAvatar(p);
         if(s.music)document.getElementById('bg-music').play().catch(()=>{});
         // Connexion canal présence pour demandes d'amis
-        connectPresence().catch(()=>{});
+        connectMyChannel().catch(()=>{});
       }
     },400);
   },2900);
